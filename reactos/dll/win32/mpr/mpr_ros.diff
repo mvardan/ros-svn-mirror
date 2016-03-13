@@ -1,0 +1,180 @@
+Index: mpr.spec
+===================================================================
+--- mpr.spec	(revision 49877)
++++ mpr.spec	(working copy)
+@@ -1,23 +1,23 @@
+ # ordinal exports
+- 1 stub @
+- 2 stub @
+- 3 stub @
+- 4 stub @
+- 5 stub @
+- 6 stub @
+- 7 stub @
+- 8 stub @
+- 9 stub @
+-12 stub @
+-13 stub @
+-14 stub @
+-15 stub @
+-16 stub @
+-17 stub @
+-18 stub @
+-19 stub @
+-20 stub @
+-21 stub @
++ 1 stub MPR_1
++ 2 stub MPR_2
++ 3 stub MPR_3
++ 4 stub MPR_4
++ 5 stub MPR_5
++ 6 stub MPR_6
++ 7 stub MPR_7
++ 8 stub MPR_8
++ 9 stub MPR_9
++12 stub MPR_12
++13 stub MPR_13
++14 stub MPR_14
++15 stub MPR_15
++16 stub MPR_16
++17 stub MPR_17
++18 stub MPR_18
++19 stub MPR_19
++20 stub MPR_20
++21 stub MPR_21
+ 22 stdcall @(long) MPR_Alloc
+ 23 stdcall @(ptr long) MPR_ReAlloc
+ 24 stdcall @(ptr) MPR_Free
+Index: wnet.c
+===================================================================
+--- wnet.c	(révision 70645)
++++ wnet.c	(copie de travail)
+@@ -750,7 +750,12 @@
+                              providerTable->table[index].dwEnumScopes & WNNC_ENUM_GLOBAL)
+                             {
+                                 HANDLE handle;
++                                PVOID RemoteName = lpNet->lpRemoteName;
+ 
++                                if ((lpNet->dwUsage & RESOURCEUSAGE_CONTAINER) &&
++                                    RemoteName && !strcmpW(RemoteName, lpNet->lpProvider))
++                                    lpNet->lpRemoteName = NULL;
++
+                                 ret = providerTable->table[index].openEnum(
+                                  dwScope, dwType, dwUsage, lpNet, &handle);
+                                 if (ret == WN_SUCCESS)
+@@ -760,6 +765,8 @@
+                                     ret = *lphEnum ? WN_SUCCESS :
+                                      WN_OUT_OF_MEMORY;
+                                 }
++
++                                lpNet->lpRemoteName = RemoteName;
+                             }
+                             else
+                                 ret = WN_NOT_SUPPORTED;
+@@ -1553,6 +1553,33 @@
+                               dwFlags, NULL, 0, NULL);
+ }
+ 
++/* Convert an ANSI string to wide */
++static LPWSTR strdupAtoW( LPCSTR str )
++{
++    LPWSTR ret;
++    INT len;
++
++    if (!str) return NULL;
++    len = MultiByteToWideChar( CP_ACP, 0, str, -1, NULL, 0 );
++    ret = HeapAlloc( GetProcessHeap(), 0, len * sizeof(WCHAR) );
++    if (ret) MultiByteToWideChar( CP_ACP, 0, str, -1, ret, len );
++    return ret;
++}
++
++/* Convert ANSI NETRESOURCE struct to wide structure */
++static VOID convert_netresourcea_to_w( LPNETRESOURCEA lpNetResourceA,
++                                       LPNETRESOURCEW lpNetResourceW )
++{
++    lpNetResourceW->dwScope = lpNetResourceA->dwScope;
++    lpNetResourceW->dwType = lpNetResourceA->dwType;
++    lpNetResourceW->dwDisplayType = lpNetResourceA->dwDisplayType;
++    lpNetResourceW->dwUsage = lpNetResourceA->dwUsage;
++    lpNetResourceW->lpLocalName = strdupAtoW(lpNetResourceA->lpLocalName);
++    lpNetResourceW->lpRemoteName = strdupAtoW(lpNetResourceA->lpRemoteName);
++    lpNetResourceW->lpComment = strdupAtoW(lpNetResourceA->lpComment);
++    lpNetResourceW->lpProvider = strdupAtoW(lpNetResourceA->lpProvider);
++}
++
+ /*****************************************************************
+  *  WNetUseConnectionA [MPR.@]
+  */
+@@ -1561,12 +1588,67 @@
+                                  LPSTR lpAccessName, LPDWORD lpBufferSize,
+                                  LPDWORD lpResult )
+ {
+-    FIXME( "(%p, %p, %p, %s, 0x%08X, %s, %p, %p), stub\n",
+-           hwndOwner, lpNetResource, lpPassword, debugstr_a(lpUserID), dwFlags,
+-           debugstr_a(lpAccessName), lpBufferSize, lpResult );
++    NETRESOURCEW resourcesW, *pRes = NULL;
++    PWSTR passW, userIDW, accessNameW = NULL;
++    DWORD ret = WN_MORE_DATA;
++    DWORD bufferSize = 1;
++    int len;
+ 
+-    SetLastError(WN_NO_NETWORK);
+-    return WN_NO_NETWORK;
++    if (lpNetResource)
++    {
++        convert_netresourcea_to_w(lpNetResource, &resourcesW);
++        pRes = &resourcesW;
++    }
++
++    passW = strdupAtoW(lpPassword);
++    userIDW = strdupAtoW(lpUserID);
++
++    if (lpAccessName && lpBufferSize && *lpBufferSize)
++    {
++        WCHAR probe;
++
++        ret = WNetUseConnectionW(hwndOwner, pRes, passW, userIDW, dwFlags,
++                                 &probe, &bufferSize, lpResult);
++        if (ret == WN_MORE_DATA)
++            accessNameW = HeapAlloc(GetProcessHeap(), 0, bufferSize * sizeof(WCHAR));
++    }
++
++    if (ret == WN_MORE_DATA)
++    {
++        ret = WNetUseConnectionW(hwndOwner, pRes, passW, userIDW, dwFlags,
++                                 accessNameW, &bufferSize, lpResult);
++        if (ret == WN_SUCCESS)
++        {
++            if (lpAccessName && lpBufferSize && *lpBufferSize && accessNameW)
++            {
++                len = WideCharToMultiByte(CP_ACP, 0, accessNameW, -1, NULL, 0, NULL, NULL);
++                if (len)
++                {
++                    if (len <= *lpBufferSize)
++                        WideCharToMultiByte(CP_ACP, 0, accessNameW, -1, lpAccessName, len, NULL, NULL);
++                    else
++                    {
++                        WNetCancelConnectionW(accessNameW, TRUE);
++                        *lpBufferSize = len;
++                       ret = WN_MORE_DATA;
++                    }
++                }
++            }
++        }
++    }
++
++    if (lpNetResource)
++    {
++        HeapFree(GetProcessHeap(), 0, resourcesW.lpLocalName);
++        HeapFree(GetProcessHeap(), 0, resourcesW.lpRemoteName);
++        HeapFree(GetProcessHeap(), 0, resourcesW.lpComment);
++        HeapFree(GetProcessHeap(), 0, resourcesW.lpProvider);
++    }
++    HeapFree(GetProcessHeap(), 0, passW);
++    HeapFree(GetProcessHeap(), 0, userIDW);
++    HeapFree(GetProcessHeap(), 0, accessNameW);
++
++    return ret;
+ }
+ 
+ /*****************************************************************
